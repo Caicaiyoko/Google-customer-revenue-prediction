@@ -493,6 +493,7 @@ def aggregate_sessions(df=None, num_cols=None):
 #                     print('clus',X[col].nunique())
 #         return X
 
+# 聚合
 class aggregate(BaseEstimator, TransformerMixin):
     def __init__(self,aggregate_sessions,num_cols,n_train,training):
         self.num_cols = num_cols
@@ -512,6 +513,7 @@ class aggregate(BaseEstimator, TransformerMixin):
 
         return X
 
+# label
 class labelenc(BaseEstimator, TransformerMixin):
     def __init__(self):
         pass
@@ -527,6 +529,7 @@ class labelenc(BaseEstimator, TransformerMixin):
         print('laben',X.info())
         return X
 
+# 数值特征处理
 class skew_dummies(BaseEstimator, TransformerMixin):
     def __init__(self, skew=0.5):
         self.skew = skew
@@ -545,6 +548,7 @@ class skew_dummies(BaseEstimator, TransformerMixin):
 #
 # class clus_feature(BaseEstimator, TransformerMixin):
 
+# 特征添加
 class add_feature(BaseEstimator, TransformerMixin):
     def __init__(self, additional=1):
         self.additional = additional
@@ -798,6 +802,7 @@ class add_feature(BaseEstimator, TransformerMixin):
 
 num_cols.append('hits_jian_pageviews')
 
+# Pipeline 流程化处理
 n_train=train.shape[0]
 pipe = Pipeline([
     ('add_feature', add_feature(additional=3)),('labenc', labelenc()),('agg',aggregate(aggregate_sessions=aggregate_sessions,num_cols=num_cols,n_train=n_train,training=1)),('skew_dummies', skew_dummies(skew=1))])
