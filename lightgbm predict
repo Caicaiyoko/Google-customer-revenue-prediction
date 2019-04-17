@@ -1,0 +1,227 @@
+import pandas as pd
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+from pandas.io.json import json_normalize
+import time
+import pytz
+from sklearn.cluster import KMeans
+from scipy.stats import skew
+import warnings
+from sklearn.decomposition import PCA, KernelPCA
+from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, clone
+from sklearn.pipeline import Pipeline, make_pipeline
+from sklearn.model_selection import train_test_split,cross_val_score, GridSearchCV, KFold
+import lightgbm as lgb
+import xgboost as xgb
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, ExtraTreesRegressor
+from sklearn.svm import SVR, LinearSVR
+from sklearn.linear_model import ElasticNet, SGDRegressor, BayesianRidge
+from xgboost import XGBRegressor
+from sklearn.kernel_ridge import KernelRidge
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import Lasso
+from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import RobustScaler, StandardScaler, LabelEncoder
+from sklearn.metrics import mean_squared_error
+import gc
+gc.enable()
+
+warnings.filterwarnings('ignore')
+#显示所有列
+pd.set_option('display.max_columns', None)
+#显示所有行
+pd.set_option('display.max_rows', None)
+#设置value的显示长度为100，默认为50
+pd.set_option('max_colwidth',100)
+
+X = pd.read_pickle('train_1117.pkl')
+y = pd.read_pickle('target1.pkl')
+test =  pd.read_pickle('test_1117.pkl')
+
+print('OK')
+data = pd.concat([X,test], axis=0)
+n = y.shape[0]
+X = data[:n]
+test = data[n:]
+del data
+gc.collect()
+print('X',X.info())
+print(X.shape)
+print(test.shape)
+
+# for col in X.columns:
+#     X[col] = X[col].astype('float')
+# X = X.reset_index(drop=True)
+# print(X.shape)
+# print(X.info())
+
+print(X.shape)
+
+# scaler = RobustScaler()
+# X = scaler.fit(train).transform(train)
+# test = scaler.transform(test)
+# print(X.shape)
+
+y = np.array(y)
+print(y[y>0].min())
+y = y.reshape(-1,)
+print('y.shape',y.shape)
+n_folds = 5
+#
+# lgbmodel = lgb.LGBMRegressor(n_estimators=1000, objective="regression", metric="rmse", num_leaves=31, min_child_samples=100,
+#                       learning_rate=0.03, bagging_fraction=0.7, feature_fraction=0.5, bagging_frequency=5,
+#                       bagging_seed=2019, subsample=.9, colsample_bytree=.9, use_best_model=True,
+#         verbose=500,early_stopping_rounds=300)
+# def rmse_cv(model):
+#     kf = KFold(n_folds, shuffle=True, random_state=42).get_n_splits(X.values)
+#     rmse= np.sqrt(-cross_val_score(model, X, y, scoring="neg_mean_squared_error", cv = kf))
+#     return(rmse)
+#
+# score = rmse_cv(lgbmodel, X, y)
+# print("{:.6f}, {:.4f}".format(score.mean(),score.std()))
+
+
+# models = [LinearRegression(),Ridge(),Lasso(alpha=0.01,max_iter=10000),RandomForestRegressor(),GradientBoostingRegressor(),SVR(),LinearSVR(),
+#           ElasticNet(alpha=0.001,max_iter=10000),SGDRegressor(max_iter=1000,tol=1e-3),BayesianRidge(),KernelRidge(alpha=0.6, kernel='polynomial', degree=2, coef0=2.5),
+#           ExtraTreesRegressor(),XGBRegressor()]
+# names = ["LR", "Ridge", "Lasso", "RF", "GBR", "SVR", "LinSVR", "Ela","SGD","Bay","Ker","Extra","Xgb"]
+# for name, model in zip(names, models):
+#     score = rmse_cv(model, X_scaled, y)
+#     print("{}: {:.6f}, {:.4f}".format(name,score.mean(),score.std()))
+#
+params = {"objective" : "regression", "metric" : "rmse",
+              "num_leaves" : 31, "learning_rate" : 0.02,
+              "bagging_fraction" : 0.75, "feature_fraction" : 0.5, "bagging_frequency" : 5,
+          'bagging_seed':1234,'subsample':.9,'colsample_bytree':.9
+          }
+
+folds = KFold(n_splits = n_folds, shuffle=True, random_state = 4)
+# #
+def lgb_():
+    prediction = np.zeros(test.shape[0])
+    model = lgb.LGBMRegressor(**params, n_estimators=3000, nthread=-1, n_jobs=-1)
+    # lgbmodel = lgb.LGBMRegressor(n_estimators=1000, objective="regression", metric="rmse", num_leaves=31, min_child_samples=100,
+    #                       learning_rate=0.03, bagging_fraction=0.7, feature_fraction=0.5, bagging_frequency=5,
+    #                       bagging_seed=2019, subsample=.9, colsample_bytree=.9, use_best_model=True)
+
+    importances = pd.DataFrame()
+    oof_reg_preds = np.zeros(X.shape[0])
+    # VAL = []
+    for n, (train_index, val_index) in enumerate(folds.split(X)):
+        print('Fold:', n)
+        # print(f'Train samples: {len(train_index)}. Valid samples: {len(test_index)}')
+        X_train, X_valid = X.iloc[train_index], X.iloc[val_index]
+        y_train, y_valid = y[train_index], y[val_index]
+
+
+        print(X_train.shape)
+        model.fit(X_train, y_train,
+                  eval_set=[(X_train, y_train), (X_valid, y_valid)], eval_metric='rmse',
+                  verbose=100,early_stopping_rounds=300)
+        if model == xgb:
+            oof_reg_preds[val_index] = model.predict(X_valid)
+
+        else:
+            oof_reg_preds[val_index] = model.predict(X_valid,num_iteration=model.best_iteration_)
+        oof_reg_preds[oof_reg_preds<0] = 0
+
+        y_pred = model.predict(test, num_iteration=model.best_iteration_)
+        y_pred[y_pred<0] = 0
+        prediction += y_pred
+    prediction /= n_folds
+    print("LGBM  ", (mean_squared_error(y, oof_reg_preds)) ** .5)
+    lgb.plot_importance(model, max_num_features=90,figsize=(18,15))
+    plt.show()
+    result = pd.DataFrame({'totals.transactionRevenue': prediction})
+    result.to_csv('submission1122.csv', index=False)
+
+
+def xgbo_():
+    model = XGBRegressor(max_depth=22, learning_rate=0.02, n_estimators=1000,
+                            objective='reg:linear', gamma=1.45, seed=2019,
+                            subsample=0.67, colsample_bytree=0.054, colsample_bylevel=0.50, early_stopping_rounds=150,
+                            )
+    prediction = np.zeros(test.shape[0])
+    importances = pd.DataFrame()
+    oof_reg_preds = np.zeros(X.shape[0])
+    # VAL = []
+    for n, (train_index, val_index) in enumerate(folds.split(X)):
+        print('Fold:', n)
+        # print(f'Train samples: {len(train_index)}. Valid samples: {len(test_index)}')
+        X_train, X_valid = X.iloc[train_index], X.iloc[val_index]
+        y_train, y_valid = y[train_index], y[val_index]
+
+        print(X_train.shape)
+        model.fit(X_train, y_train,
+                  eval_set=[(X_train, y_train), (X_valid, y_valid)], eval_metric='rmse',
+                  verbose=100, early_stopping_rounds=350)
+
+
+        oof_reg_preds[val_index] = model.predict(X_valid)
+
+
+        oof_reg_preds[oof_reg_preds < 0] = 0
+
+        y_pred = model.predict(test)
+        y_pred[y_pred < 0] = 0
+        prediction += y_pred
+    prediction /= n_folds
+    print("xgb  ", (mean_squared_error(y, oof_reg_preds)) ** .5)
+    oof_reg_preds.to_pickle('xgbvalid.pkl')
+    xgb.plot_importance(model, max_num_features=90, figsize=(18, 15))
+    plt.show()
+    result = pd.DataFrame({'totals.transactionRevenue': prediction})
+    result.to_csv('submission1117.csv', index=False)
+
+lgb_()
+# result = pd.DataFrame({'totals.transactionRevenue':prediction})
+# result.to_csv('submission1106_xgb.csv',index=False)
+
+# predict
+test = pd.read_csv('New/sample_submission_v2.csv')
+prediction = pd.read_csv('submission1122.csv')
+prediction = np.array(prediction)
+test['PredictedLogRevenue'] = prediction
+test["PredictedLogRevenue"].apply(lambda x : 0.0 if x < 0 else x)
+test.to_csv('lgb_0.1385.csv',index=False)
+
+# class stacking(BaseEstimator, RegressorMixin, TransformerMixin):
+#     def __init__(self, mod, meta_model):
+#         self.mod = mod
+#         self.meta_model = meta_model
+#         self.kf = KFold(n_splits=5, random_state=42, shuffle=True)
+#
+#     def fit(self, X, y):
+#         self.saved_model = [list() for i in self.mod]
+#         oof_train = np.zeros((X.shape[0], len(self.mod)))
+#
+#         for i, model in enumerate(self.mod):
+#             for train_index, val_index in self.kf.split(X, y):
+#                 renew_model = clone(model)
+#                 renew_model.fit(X[train_index], y[train_index])
+#                 self.saved_model[i].append(renew_model)
+#                 oof_train[val_index, i] = renew_model.predict(X[val_index])
+#
+#         self.meta_model.fit(oof_train, y)
+#         return self
+#
+#     def predict(self, X):
+#         whole_test = np.column_stack([np.column_stack(model.predict(X) for model in single_model).mean(axis=1)
+#                                       for single_model in self.saved_model])
+#         return self.meta_model.predict(whole_test)
+#
+#     def get_oof(self, X, y, test_X):
+#         oof = np.zeros((X.shape[0], len(self.mod)))
+#         test_single = np.zeros((test_X.shape[0], 5))
+#         test_mean = np.zeros((test_X.shape[0], len(self.mod)))
+#         for i, model in enumerate(self.mod):
+#             for j, (train_index, val_index) in enumerate(self.kf.split(X, y)):
+#                 clone_model = clone(model)
+#                 clone_model.fit(X[train_index], y[train_index])
+#                 oof[val_index, i] = clone_model.predict(X[val_index])
+#                 test_single[:, j] = clone_model.predict(test_X)
+#             test_mean[:, i] = test_single.mean(axis=1)
+#         return oof, test_mean
