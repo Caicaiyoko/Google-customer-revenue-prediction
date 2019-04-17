@@ -1,0 +1,820 @@
+import pandas as pd
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+from pandas.io.json import json_normalize
+import time
+import pytz
+from sklearn.cluster import KMeans
+from scipy.stats import skew
+import warnings
+from sklearn.decomposition import PCA, KernelPCA
+from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, clone
+from sklearn.pipeline import Pipeline, make_pipeline
+from sklearn.model_selection import train_test_split,cross_val_score, GridSearchCV, KFold
+import lightgbm as lgb
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, ExtraTreesRegressor
+from sklearn.svm import SVR, LinearSVR
+from sklearn.linear_model import ElasticNet, SGDRegressor, BayesianRidge
+from xgboost import XGBRegressor
+from sklearn.kernel_ridge import KernelRidge
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import Lasso
+from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import RobustScaler, StandardScaler, LabelEncoder
+import gc
+import seaborn as sns
+gc.enable()
+
+warnings.filterwarnings('ignore')
+#显示所有列
+pd.set_option('display.max_columns', None)
+#显示所有行
+pd.set_option('display.max_rows', None)
+#设置value的显示长度为100，默认为50
+pd.set_option('max_colwidth',100)
+
+# 读取数据
+train = pd.read_pickle('train_1116.pkl')
+test = pd.read_pickle('test_1116.pkl')
+
+# drop constant
+def drop_constant_cols(df):
+    # Drop constant columns
+    const_cols = [c for c in df.columns if df[c].nunique(dropna=False) == 1]
+    df.drop(const_cols, axis=1, inplace=True)
+    # this columnm is only in train data
+    try:
+        df.drop('trafficSource.campaignCode', axis=1, inplace=True)
+    except:
+        None
+
+drop_constant_cols(train)
+drop_constant_cols(test)
+
+print(train.head())
+
+train['date_time'] = train['visitStartTime']
+train['date'] = pd.to_datetime(train['date'].apply(lambda x: str(x)[:4] + '-' + str(x)[4:6] + '-' + str(x)[6:]))
+train['month'] = train['date'].dt.month
+train['day'] = train['date'].dt.day
+train['weekday'] = train['date'].dt.weekday
+train['weekofyear'] = train['date'].dt.weekofyear
+
+fig, ax1 = plt.subplots(figsize=(16, 8))
+plt.title("Trends of transactions number by paying and non-paying users");
+train.groupby(['date'])['totals.transactionRevenue'].count().plot(color='brown')
+ax1.set_ylabel('Transaction count', color='b')
+plt.legend(['Non-paying users'])
+plt.show()
+
+# drop unuse columns
+train.drop(labels=['customDimensions','totals.totalTransactionRevenue'],axis=1,inplace=True)
+test.drop(labels=['customDimensions','totals.transactionRevenue','totals.totalTransactionRevenue'],axis=1,inplace=True)
+
+train['totals.transactionRevenue'] = train['totals.transactionRevenue'].fillna(0).astype('float')
+train['totals.transactionRevenue'] = train['totals.transactionRevenue'].loc[train['totals.transactionRevenue'].notnull()].astype('float')
+
+# the number of unique category
+for col in train.columns:
+    print(col,train[col].nunique())
+
+# save target
+target = np.log1p(train[['fullVisitorId', 'totals.transactionRevenue']].groupby('fullVisitorId').sum())
+target.to_pickle('target1.pkl')
+
+# get leak data
+train_store_1 = pd.read_csv('data/Train_external_data.csv', low_memory=False, skiprows=6, dtype={"Client Id":'str'})
+train_store_2 = pd.read_csv('data/Train_external_data_2.csv', low_memory=False, skiprows=6, dtype={"Client Id":'str'})
+test_store_1 = pd.read_csv('data/Test_external_data.csv', low_memory=False, skiprows=6, dtype={"Client Id":'str'})
+test_store_2 = pd.read_csv('data/Test_external_data_2.csv', low_memory=False, skiprows=6, dtype={"Client Id":'str'})
+
+for df in [train_store_1, train_store_2, test_store_1, test_store_2]:
+    df["visitId"] = df["Client Id"].apply(lambda x: x.split('.', 1)[1]).astype(np.int64)
+
+# Merge with train/test data
+train = train.merge(pd.concat([train_store_1, train_store_2], sort=False), how="left", on="visitId")
+test = test.merge(pd.concat([test_store_1, test_store_2], sort=False), how="left", on="visitId")
+
+# Drop Client Id
+for df in [train, test]:
+    df.drop("Client Id", 1, inplace=True)
+
+# Cleaning Revenue
+for df in [train, test]:
+    df["Revenue"].fillna('$', inplace=True)
+    df["Revenue"] = df["Revenue"].apply(lambda x: x.replace('$', '').replace(',', ''))
+    df["Revenue"] = pd.to_numeric(df["Revenue"], errors="coerce")
+    df["Revenue"].fillna(0.0, inplace=True)
+
+for df in [train_store_1, train_store_2, test_store_1, test_store_2]:
+    del df
+gc.collect()
+
+print('mergeOK')
+
+# merge train and test
+df_combi = pd.concat([train,test], ignore_index=True)
+df_combi.drop('totals.transactionRevenue', axis=1, inplace=True)
+
+df_combi['date'] = pd.to_datetime(df_combi['date'].apply(lambda x: str(x)[:4] + '-' + str(x)[4:6] + '-' + str(x)[6:]))
+df_combi['month'] = df_combi['date'].dt.month
+df_combi['day'] = df_combi['date'].dt.day
+df_combi['weekday'] = df_combi['date'].dt.weekday
+df_combi['weekofyear'] = df_combi['date'].dt.weekofyear
+df_combi['date_time'] = df_combi['visitStartTime']
+
+df_combi.drop('date', axis=1, inplace=True)
+
+df_combi['visitStartTime'] = pd.to_datetime(df_combi['visitStartTime'],unit='s')
+df_combi['visitStartTime'] = df_combi['visitStartTime'].apply(lambda x:str(x)[11:13])
+train['visitStartTime'] = pd.to_datetime(train['visitStartTime'],unit='s')
+train['visitStartTime'] = train['visitStartTime'].apply(lambda x:str(x)[11:13])
+test['visitStartTime'] = pd.to_datetime(test['visitStartTime'],unit='s')
+test['visitStartTime'] = test['visitStartTime'].apply(lambda x:str(x)[11:13])
+
+# df_combi['visitId_dublicates'] = df_combi['visitId'].map(df_combi["visitId"].value_counts())
+# df_combi["session_dublicates"] = df_combi.sessionId.map(df.sessionId.value_counts())
+# fullvistorid = df_combi['fullVisitorId']
+# df_combi.drop('fullVisitorId', axis=1, inplace=True)
+
+df_combi.drop('visitId', axis=1, inplace=True)
+
+# handle time
+train['date_time'] = train['visitStartTime']
+train['date'] = pd.to_datetime(train['date'].apply(lambda x: str(x)[:4] + '-' + str(x)[4:6] + '-' + str(x)[6:]))
+train['month'] = train['date'].dt.month
+train['day'] = train['date'].dt.day
+train['weekday'] = train['date'].dt.weekday
+train['weekofyear'] = train['date'].dt.weekofyear
+test['date_time'] = test['visitStartTime']
+test['date'] = pd.to_datetime(test['date'].apply(lambda x: str(x)[:4] + '-' + str(x)[4:6] + '-' + str(x)[6:]))
+test['month'] = test['date'].dt.month
+test['day'] = test['date'].dt.day
+test['weekday'] = test['date'].dt.weekday
+test['weekofyear'] = test['date'].dt.weekofyear
+
+#handle on Nan
+num_cols = ['visitNumber', 'totals.bounces', 'totals.hits',
+            'totals.newVisits', 'totals.pageviews','trafficSource.adwordsClickInfo.page',
+            'Sessions','Bounce Rate','Revenue','Transactions','Goal Conversion Rate',"Avg. Session Duration"
+            ,'totals.sessionQualityDim','totals.timeOnSite']
+
+for cols in num_cols:
+    train[cols].fillna(0, inplace=True)
+    test[cols].fillna(0, inplace=True)
+    df_combi[cols].fillna(0, inplace=True)
+
+print('stage1')
+
+def leak(df = df_combi):
+    df["Avg. Session Duration"].loc[df["Avg. Session Duration"] == 0] = "00:00:00"
+    df["Avg. Session Duration"] = df["Avg. Session Duration"].astype('str').apply(lambda x:x.split(':'))
+    df["Avg. Session Duration"] = df["Avg. Session Duration"].apply(lambda x: int(x[0]) * 60 + int(x[1]))
+    df["Bounce Rate"] = df["Bounce Rate"].astype(str).apply(lambda x: x.replace('%', '')).astype(float)
+    df["Goal Conversion Rate"] = df["Goal Conversion Rate"].astype(str).apply(lambda x: x.replace('%', '')).astype(float)
+
+leak()
+leak(train)
+
+for cols in num_cols:
+    train[cols] = train[cols].astype('float')
+    df_combi[cols] = df_combi[cols].astype('float')
+
+for cols in df_combi.columns:
+    # try :
+        if (cols not in num_cols)&(cols !='date_time'):
+            train[cols].fillna('None', inplace=True)
+            test[cols].fillna('None', inplace=True)
+            df_combi[cols].fillna('None', inplace=True)
+            df_combi[cols] = df_combi[cols].astype('str')
+            train[cols] = train[cols].astype('str')
+    # except:
+    #     None
+
+df_combi['shoptime'] = df_combi['geoNetwork.subContinent'] + df_combi['visitStartTime']
+df_combi.drop('visitStartTime', axis=1, inplace=True)
+train['shoptime'] = train['geoNetwork.subContinent'] + train['visitStartTime']
+train.drop('visitStartTime', axis=1, inplace=True)
+test['shoptime'] = test['geoNetwork.subContinent'] + test['visitStartTime']
+test.drop('visitStartTime', axis=1, inplace=True)
+
+# 每日数据计算
+def perday(df = df_combi):
+    df['dummy'] = 1
+    df['user_cumcnt_per_day'] = (df[['fullVisitorId','date_time', 'dummy']].groupby(['fullVisitorId','date_time'])['dummy'].cumcount()+1)
+    df['user_sum_per_day'] = df[['fullVisitorId','date_time', 'dummy']].groupby(['fullVisitorId','date_time'])['dummy'].transform(sum)
+    df['user_cumcnt_sum_ratio_per_day'] = df['user_cumcnt_per_day'] / df['user_sum_per_day']
+    df.drop('dummy', axis=1, inplace=True)
+
+perday()
+
+num_cols.append('user_cumcnt_per_day')
+num_cols.append('user_sum_per_day')
+num_cols.append('user_cumcnt_sum_ratio_per_day')
+
+# def clus(cols, k=256,df_combi = df_combi):
+#     print(cols)
+#     referralPath_mean = train.groupby([cols])[['totals.transactionRevenue']].mean()
+#     c = referralPath_mean['totals.transactionRevenue'].sort_values(ascending=False)
+#     referralPath_mean_index = c.index
+#
+#     c = c.values.reshape(-1,1)
+#     if train[cols].nunique() < k:
+#         model = KMeans(n_clusters=k-128, init='k-means++', n_init=10)
+#     else:
+#         model = KMeans(n_clusters=k, init='k-means++', n_init=10)
+#     y_pred = model.fit_predict(c)
+#
+#     dict_1 = {}
+#     for m, n in enumerate(referralPath_mean_index):
+#         dict_1[n] = y_pred[m]
+#         # print(y_pred[m],n)
+#
+#     train[cols] = train[cols].map(dict_1)
+#     df_combi[cols] = df_combi[cols].map(dict_1)
+#
+#     dict_2 = {}
+#     a = train.groupby(cols)[['totals.transactionRevenue']].mean()
+#     b = a['totals.transactionRevenue'].sort_values(ascending=False)
+#
+#     for m,n in enumerate(b.index):
+#         dict_2[n] = k-m
+#         # print(n,4-m)
+#     train[cols] = train[cols].map(dict_2)
+#     df_combi[cols] = df_combi[cols].map(dict_2)
+#     if df_combi[cols].isnull().sum() > 0:
+#         print(cols, df_combi[cols].mode())
+#         df_combi[cols].fillna(df_combi[cols].mode().iloc[0], inplace=True)
+#     df_combi[cols] = df_combi[cols].astype('int')
+#     return df_combi
+
+
+# def browser_mapping(x):
+#     browsers = ['chrome', 'safari', 'firefox', 'internet explorer', 'edge', 'opera', 'coc coc', 'maxthon', 'iron']
+#     if x in browsers:
+#         return x.lower()
+#     elif ('android' in x) or ('samsung' in x) or ('mini' in x) or ('iphone' in x) or ('in-app' in x) or (
+#             'playstation' in x):
+#         return 'mobile browser'
+#     elif ('mozilla' in x) or ('chrome' in x) or ('blackberry' in x) or ('nokia' in x) or ('browser' in x) or (
+#             'amazon' in x):
+#         return 'mobile browser'
+#     elif ('lunascape' in x) or ('netscape' in x) or ('blackberry' in x) or ('konqueror' in x) or ('puffin' in x) or (
+#             'amazon' in x):
+#         return 'mobile browser'
+#     elif '(not set)' in x:
+#         return x
+#     else:
+#         return 'others'
+
+def adcontents_mapping(x):
+    if ('google' in x):
+        return 'google'
+    elif ('placement' in x) | ('placememnt' in x):
+        return 'placement'
+    elif '(not set)' in x or 'nan' in x:
+        return x
+    elif 'ad' in x:
+        return 'ad'
+    else:
+        return 'others'
+#
+#
+# def source_mapping(x):
+#     if ('google' in x):
+#         return 'google'
+#     elif ('youtube' in x):
+#         return 'youtube'
+#     elif '(not set)' in x or 'nan' in x:
+#         return x
+#     elif 'yahoo' in x:
+#         return 'yahoo'
+#     elif 'facebook' in x:
+#         return 'facebook'
+#     elif 'reddit' in x:
+#         return 'reddit'
+#     elif 'bing' in x:
+#         return 'bing'
+#     elif 'quora' in x:
+#         return 'quora'
+#     elif 'outlook' in x:
+#         return 'outlook'
+#     elif 'linkedin' in x:
+#         return 'linkedin'
+#     elif 'pinterest' in x:
+#         return 'pinterest'
+#     elif 'ask' in x:
+#         return 'ask'
+#     elif 'siliconvalley' in x:
+#         return 'siliconvalley'
+#     elif 'lunametrics' in x:
+#         return 'lunametrics'
+#     elif 'amazon' in x:
+#         return 'amazon'
+#     elif 'mysearch' in x:
+#         return 'mysearch'
+#     elif 'qiita' in x:
+#         return 'qiita'
+#     elif 'messenger' in x:
+#         return 'messenger'
+#     elif 'twitter' in x:
+#         return 'twitter'
+#     elif 't.co' in x:
+#         return 't.co'
+#     elif 'vk.com' in x:
+#         return 'vk.com'
+#     elif 'search' in x:
+#         return 'search'
+#     elif 'edu' in x:
+#         return 'edu'
+#     elif 'mail' in x:
+#         return 'mail'
+#     elif 'ad' in x:
+#         return 'ad'
+#     elif 'golang' in x:
+#         return 'golang'
+#     elif 'direct' in x:
+#         return 'direct'
+#     elif 'dealspotr' in x:
+#         return 'dealspotr'
+#     elif 'sashihara' in x:
+#         return 'sashihara'
+#     elif 'phandroid' in x:
+#         return 'phandroid'
+#     elif 'baidu' in x:
+#         return 'baidu'
+#     elif 'mdn' in x:
+#         return 'mdn'
+#     elif 'duckduckgo' in x:
+#         return 'duckduckgo'
+#     elif 'seroundtable' in x:
+#         return 'seroundtable'
+#     elif 'metrics' in x:
+#         return 'metrics'
+#     elif 'sogou' in x:
+#         return 'sogou'
+#     elif 'businessinsider' in x:
+#         return 'businessinsider'
+#     elif 'github' in x:
+#         return 'github'
+#     elif 'gophergala' in x:
+#         return 'gophergala'
+#     elif 'yandex' in x:
+#         return 'yandex'
+#     elif 'msn' in x:
+#         return 'msn'
+#     elif 'dfa' in x:
+#         return 'dfa'
+#     elif '(not set)' in x:
+#         return '(not set)'
+#     elif 'feedly' in x:
+#         return 'feedly'
+#     elif 'arstechnica' in x:
+#         return 'arstechnica'
+#     elif 'squishable' in x:
+#         return 'squishable'
+#     elif 'flipboard' in x:
+#         return 'flipboard'
+#     elif 't-online.de' in x:
+#         return 't-online.de'
+#     elif 'sm.cn' in x:
+#         return 'sm.cn'
+#     elif 'wow' in x:
+#         return 'wow'
+#     elif 'baidu' in x:
+#         return 'baidu'
+#     elif 'partners' in x:
+#         return 'partners'
+#     else:
+#         return 'others'
+#
+# df_combi['device.browser'] = df_combi['device.browser'].map(lambda x:browser_mapping(str(x).lower())).astype('str')
+df_combi['trafficSource.adContent'] = df_combi['trafficSource.adContent'].map(lambda x:adcontents_mapping(str(x).lower())).astype('str')
+# df_combi['trafficSource.source'] = df_combi['trafficSource.source'].map(lambda x:source_mapping(str(x).lower())).astype('str')
+
+def refer(x):
+    if ('google' in x):
+        return 'google'
+
+df_combi['trafficSource.referralPath']  = df_combi['trafficSource.referralPath'].map(lambda x :refer(str(x).lower())).astype('str')
+
+# limit the max number,rare categories meaning?
+def clearRare(columnname, limit=1000):
+    # you may search for rare categories in train, train&test, or just test
+    # vc = pd.concat([train[columnname], test[columnname]], sort=False).value_counts()
+    vc = df_combi[columnname].value_counts()
+    common = vc > limit
+    common = set(common.index[common].values)
+    print("Set", sum(vc <= limit), columnname, "categories to 'other';", end=" ")
+    df_combi.loc[df_combi[columnname].map(lambda x: x not in common), columnname] = 'None'
+    print("now there are", df_combi[columnname].nunique(), "categories in train")
+
+rare_categories = ["device.browser","device.operatingSystem","geoNetwork.country","geoNetwork.city","geoNetwork.metro",
+                   "geoNetwork.networkDomain","geoNetwork.region","geoNetwork.subContinent","trafficSource.adContent",
+                   "trafficSource.campaign","trafficSource.keyword","trafficSource.medium","trafficSource.referralPath","trafficSource.source"]
+
+for category in rare_categories:
+    clearRare(category)
+
+# day
+df_combi['time_oval'] = df_combi['month'] + df_combi['day']
+day_session = df_combi['time_oval'].value_counts()
+df_combi['day_session'] = df_combi['time_oval'].map(day_session)
+num_cols.append('day_session')
+df_combi['date_time'] = df_combi['date_time'].astype('str')
+
+# check
+Nan_number = df_combi.isnull().sum()
+Nan_number[Nan_number > 0].sort_values(ascending=False)
+print('iNanNan',Nan_number[Nan_number > 0].sort_values(ascending=False))
+print(df_combi.info())
+
+# 聚合
+def aggregate_sessions(df=None, num_cols=None):
+    aggs = {
+            'date_time': ['min', 'max'],
+
+            'totals.hits': ['sum', 'min', 'max', 'mean', 'median'],
+            'totals.pageviews': ['sum', 'min', 'max', 'mean', 'median'],
+            'totals.bounces': ['sum', 'mean', 'median'],
+            'totals.newVisits': ['sum', 'mean', 'median'],
+            'Sessions': ['sum'], 'Bounce Rate': ['sum'],
+            'Revenue': ['sum'], 'Transactions': ['sum'],
+            'Goal Conversion Rate': ['sum'],
+            "Avg. Session Duration": ['sum'],
+        'month':['median','var'],
+        'hits_jian_pageviews':['max','min','sum','mean','median']
+
+    }
+    # aggs = {
+    #     'date_time': ['min', 'max'],
+    #
+    #     'totals.hits': ['sum', 'min', 'max', 'mean', 'median'],
+    #     'totals.pageviews': ['sum', 'min', 'max', 'mean', 'median'],
+    #     'totals.bounces': ['sum', 'mean', 'median'],
+    #     'totals.newVisits': ['sum', 'mean', 'median'],
+    #     'Sessions': ['sum'], 'Bounce Rate': ['sum'],
+    #     'Revenue': ['sum'], 'Transactions': ['sum'],
+    #     'Goal Conversion Rate': ['sum'],
+    #     "Avg. Session Duration": ['sum']
+    # }
+    for f in df.columns:
+        if (f not in num_cols)&(f != 'fullVisitorId')&(f != 'date_time'):
+             aggs[f] = ['min', 'max', 'mean', 'median', 'var', 'std']
+    df['date_time'] = df['date_time'].astype('float')
+    users = df.groupby('fullVisitorId').agg(aggs)
+    new_columns = [
+        k + '_' + agg for k in aggs.keys() for agg in aggs[k]
+    ]
+
+    users.columns = new_columns
+    users['date_diff'] = (users['date_time_max'] - users['date_time_min']).astype(np.float64)// (24 * 3600 * 1e9)
+    users.drop(['date_time_max','date_time_min'],axis=1,inplace=True)
+    print('agg_user.info()', users.info())
+    return users
+
+# class clus_feature(BaseEstimator, TransformerMixin):
+#     def __init__(self,clus,num_cols):
+#         self.num_cols = num_cols
+#         self.clus = clus
+#
+#     def fit(self, X, y=None):
+#         return self
+#
+#     def transform(self, X):
+#         print('clus_begin',X.info())
+#         for col in X.columns:
+#             if (col not in num_cols)&(col not in ['fullVisitorId', 'sessionId', 'date_time']):
+#                 if X[col].nunique() >= 256:
+#                     X = clus(cols=col, df_combi=X)
+#                     print('clus',X[col].nunique())
+#         return X
+
+class aggregate(BaseEstimator, TransformerMixin):
+    def __init__(self,aggregate_sessions,num_cols,n_train,training):
+        self.num_cols = num_cols
+        self.aggregate_sessions = aggregate_sessions
+        self.training = training
+        self.n_train = n_train
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X_train = X[:self.n_train]
+        X_test = X[self.n_train:]
+        X_train = aggregate_sessions(X_train, num_cols)
+        X_test = aggregate_sessions(X_test, num_cols)
+        X = pd.concat([X_train,X_test])
+
+        return X
+
+class labelenc(BaseEstimator, TransformerMixin):
+    def __init__(self):
+        pass
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        lab = LabelEncoder()
+        for col in X.columns:
+            if (X[col].dtypes == 'object')&(col not in ['fullVisitorId', 'sessionId', 'date_time']):
+                X[col] = lab.fit_transform(X[col])
+        print('laben',X.info())
+        return X
+
+class skew_dummies(BaseEstimator, TransformerMixin):
+    def __init__(self, skew=0.5):
+        self.skew = skew
+
+    def fit(self, X,y=None):
+        return self
+
+    def transform(self, X):
+        print('skew',X.info())
+        X_numeric = X.select_dtypes(exclude=["object"])
+        skewness = X_numeric.apply(lambda x: skew(x))
+        skewness_features = skewness[abs(skewness) >= self.skew].index
+        print('skewness',skewness_features)
+        X[skewness_features] = np.log1p(X[skewness_features])
+        return X
+#
+# class clus_feature(BaseEstimator, TransformerMixin):
+
+class add_feature(BaseEstimator, TransformerMixin):
+    def __init__(self, additional=1):
+        self.additional = additional
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        if self.additional == 1:
+            # device_category
+            X["device_brower_mobile_operatingSystem"] = X["device.browser"] + X["device.isMobile"] + X["device.operatingSystem"]
+            X['geoNetwork_net_city'] = X['geoNetwork.networkDomain'] + X['geoNetwork.city']
+            # X['medium_keyword'] = X['trafficSource.medium'] + X['trafficSource.keyword']
+            X['referral_compaign'] = X['trafficSource.referralPath'] + X['trafficSource.campaign']
+            X['time_oval'] = X['weekofyear'] +X['day']
+            X['trafficSource_True_source'] = X['trafficSource.isTrueDirect'] + X['trafficSource.source']
+            X['month_operatingSystem'] = X['month'] + X['device.operatingSystem']
+            X['hits_jian_pageviews'] = X['totals.hits'] - X['totals.pageviews']
+            X['trafficSource.medium_channelGrouping'] = X['trafficSource.medium'] + '_' + X[
+                'channelGrouping']
+            X['subContinent_operatingSystem'] = X['geoNetwork.subContinent'] + '_' + X['device.operatingSystem']
+        elif self.additional == 2:
+            X['geoNetwork_net_city'] = X['geoNetwork.networkDomain'] + "_" + X['geoNetwork.city']
+            X['time_oval'] = X['month'] + X['day']
+            X['month_operatingSystem'] = X['month'] + X['device.operatingSystem']
+            X['month_channelGrouping'] = X['month'] + X['channelGrouping']
+            X['networkDomain_isTrueDirect'] = X['geoNetwork.networkDomain'] + "_" + X['trafficSource.isTrueDirect']
+            X['networkDomain_trafficSource.referralPath'] = X['geoNetwork.networkDomain'] + "_" + X['trafficSource.referralPath']
+            X['city_isTrueDirect'] = X['geoNetwork.city']+ "_" + X['trafficSource.isTrueDirect']
+            X['geoNetwork_net_region'] = X['geoNetwork.networkDomain'] + "_" + X['geoNetwork.region']
+            X['trafficSource.referralPath_device.operatingSystem'] = X['trafficSource.referralPath'] + "_" + X['device.operatingSystem']
+            X['trafficSource.isTrueDirect_device.operatingSystem'] = X['trafficSource.isTrueDirect'] + "_" + X[
+                'device.operatingSystem']
+            X['subContinent_operatingSystem'] = X['geoNetwork.subContinent'] + '_' + X['device.operatingSystem']
+            X['trafficSource.keyword_device.operatingSystem'] = X['trafficSource.keyword'] + '_' + X[
+                'device.operatingSystem']
+            X['trafficSource.adwordsClickInfo.slot_device.operatingSystem'] = X[
+                                                                                  'trafficSource.adwordsClickInfo.slot'] + '_' + \
+                                                                              X[
+                                                                                  'device.operatingSystem']
+            X['geoNetwork.country_channelGrouping'] = X['geoNetwork.country'] + X['channelGrouping']
+            X['keyword_referralPath'] = X['trafficSource.keyword'] + '_' + X[
+                'trafficSource.referralPath']
+            # medium_referralPath
+            X['medium_referralPath'] = X['trafficSource.medium'] + '_' + X[
+                'trafficSource.referralPath']
+            X['geoNetwork.networkDomain_trafficSource.referralPath'] = X['geoNetwork.networkDomain'] + '_' + X[
+                'trafficSource.referralPath']
+            X['geoNetwork.networkDomain_trafficSource.medium'] = X['geoNetwork.networkDomain'] + '_' + X[
+                'trafficSource.medium']
+            X['trafficSource.adwordsClickInfo.gclId_trafficSource.source'] = X[
+                                                                                 'trafficSource.adwordsClickInfo.gclId'] + '_' + \
+                                                                             X['trafficSource.source']
+            X['trafficSource.adwordsClickInfo.gclId_device.operatingSystem'] = X[
+                                                                                   'trafficSource.adwordsClickInfo.gclId'] + '_' + \
+                                                                               X['device.operatingSystem']
+            X['hits_jian_pageviews'] = X['totals.hits'] - X['totals.pageviews']
+            X['trafficSource.medium_channelGrouping'] = X['trafficSource.medium'] + '_' + X[
+                'channelGrouping']
+
+            # 1.4118 after
+            X['hits_jian_pageviews'] = X['totals.hits'] - X['totals.pageviews']
+            X['trafficSource.medium_channelGrouping'] = X['trafficSource.medium'] + '_' + X[
+                'channelGrouping']
+            X['hits_add_pageviews'] = X['totals.hits'] - X['totals.pageviews']
+            X['hits_chu_pageviews'] = X['totals.hits'] / X['totals.pageviews']
+            # 1.4108
+            X['channelGroup_adNetworkType'] =X['trafficSource.adwordsClickInfo.adNetworkType'] + X['channelGrouping']
+        elif self.additional == 3:
+            X['geoNetwork_net_city'] = X['geoNetwork.networkDomain'] + "_" + X['geoNetwork.city']
+            X['time_oval'] = X['month'] + X['day']
+            X['trafficSource_True_source'] = X['trafficSource.isTrueDirect'] + "_" + X['trafficSource.source']
+            X['keyword_referalPath'] = X['trafficSource.keyword'] + "_" + X['trafficSource.referralPath']
+            X["device_brower_mobile_operatingSystem_category"] = X["device.browser"] + X["device.isMobile"] + X[
+                "device.operatingSystem"] + X['device.deviceCategory']
+            X['subContinent_operatingSystem'] = X['geoNetwork.subContinent'] + '_' + X['device.operatingSystem']
+            X['trafficSource.referralPath_device.operatingSystem'] = X['trafficSource.referralPath'] + '_' + X[
+                'device.operatingSystem']
+            X['trafficSource.keyword_device.operatingSystem'] = X['trafficSource.keyword'] + '_' + X[
+                'device.operatingSystem']
+            X['trafficSource.adwordsClickInfo.slot_device.operatingSystem'] = X[
+                                                                                  'trafficSource.adwordsClickInfo.slot'] + '_' + \
+                                                                              X[
+                                                                                  'device.operatingSystem']
+            X['trafficSource.keyword_device.browser'] = X['trafficSource.keyword'] + '_' + X['device.browser']
+            X['trafficSource.adwordsClickInfo.adNetworkType_device.operatingSystem'] = X[
+                                                                                           'device.operatingSystem'] + '_' + \
+                                                                                       X[
+                                                                                           'trafficSource.adwordsClickInfo.adNetworkType']
+            X['trafficSource.referralPath_device.browser'] = X['trafficSource.referralPath'] + '_' + X['device.browser']
+            X['trafficSource.keyword_device.deviceCategory'] = X['device.deviceCategory'] + '_' + X[
+                'trafficSource.keyword']
+            X['trafficSource.adwordsClickInfo.slot_device.deviceCategory'] = X['device.deviceCategory'] + '_' + X[
+                'trafficSource.adwordsClickInfo.slot']
+            X['trafficSource.referralPath_device.deviceCategory'] = X['trafficSource.referralPath'] + '_' + X[
+                'device.deviceCategory']
+            X['trafficSource.adwordsClickInfo.adNetworkType_device.deviceCategory'] = X[
+                                                                                          'trafficSource.adwordsClickInfo.adNetworkType'] + '_' + \
+                                                                                      X['device.deviceCategory']
+            X['trafficSource.adContent_device.deviceCategory'] = X['trafficSource.adContent'] + '_' + X[
+                'device.deviceCategory']
+            X['trafficSource.medium_device.operatingSystem'] = X['trafficSource.medium'] + '_' + X[
+                'device.operatingSystem']
+
+            X['trafficSource.keyword_device.operatingSystem'] = X['trafficSource.keyword'] + '_' + X[
+                'device.operatingSystem']
+
+            X['trafficSource.medium_device.deviceCategory'] = X['trafficSource.medium'] + '_' + X[
+                'device.deviceCategory']
+            X['trafficSource.keyword_trafficSource.source'] = X['trafficSource.keyword'] + '_' + X[
+                'trafficSource.source']
+            X['trafficSource.campaign_device.operatingSystem'] = X['trafficSource.campaign'] + '_' + X[
+                'device.operatingSystem']
+            X['trafficSource.keyword_device.deviceCategory'] = X['trafficSource.keyword'] + '_' + X[
+                'device.deviceCategory']
+            X['trafficSource.adwordsClickInfo.slot_device.deviceCategory'] = X[
+                                                                                 'trafficSource.adwordsClickInfo.slot'] + '_' + \
+                                                                             X[
+                                                                                 'device.deviceCategory']
+            X['month_operatingSystem'] = X['month'] + '_' + X['device.operatingSystem']
+            X['trafficSource.adwordsClickInfo.gclId_trafficSource.source'] = X[
+                                                                                 'trafficSource.adwordsClickInfo.gclId'] + '_' + \
+                                                                             X['trafficSource.source']
+            X['trafficSource.adwordsClickInfo.gclId_device.operatingSystem'] = X[
+                                                                                   'trafficSource.adwordsClickInfo.gclId'] + '_' + \
+                                                                               X['device.operatingSystem']
+            X['channelGrouping_device.operatingSystem'] = X['channelGrouping'] + '_' + X['device.operatingSystem']
+            X['channelGrouping_device.deviceCategory'] = X['channelGrouping'] + '_' + X['device.deviceCategory']
+            X['device.browser_device.deviceCategory'] = X['device.browser'] + '_' + X['device.deviceCategory']
+
+            X['geoNetwork.networkDomain_channelGrouping'] = X['geoNetwork.networkDomain'] + '_' + X['channelGrouping']
+            X['geoNetwork.city_channelGrouping'] = X['geoNetwork.city'] + '_' + X['channelGrouping']
+            X['month_channelGrouping'] = X['month'] + '_' + X['channelGrouping']
+            X['geoNetwork.networkDomain_trafficSource.adwordsClickInfo.gclId'] = X['geoNetwork.networkDomain'] + '_' + \
+                                                                                 X[
+                                                                                     'trafficSource.adwordsClickInfo.gclId']
+            X['geoNetwork.metro_channelGrouping'] = X['geoNetwork.metro'] + '_' + X['channelGrouping']
+
+
+            X['geoNetwork.region_channelGrouping'] = X['geoNetwork.region'] + '_' + X[
+                'channelGrouping']
+            X['geoNetwork.country_channelGrouping'] = X['geoNetwork.country'] + '_' + X[
+                'channelGrouping']
+            X['geoNetwork.networkDomain_trafficSource.adwordsClickInfo.adNetworkType'] = X[
+                                                                                             'geoNetwork.networkDomain'] + '_' + \
+                                                                                         X[
+                                                                                             'trafficSource.adwordsClickInfo.adNetworkType']
+
+            X['trafficSource.referralPath_channelGrouping'] = X['trafficSource.referralPath'] + '_' + X[
+                'channelGrouping']
+            X['geoNetwork.subContinent_channelGrouping'] = X['geoNetwork.subContinent'] + '_' + X[
+                'channelGrouping']
+
+            X['city_medium'] = X['geoNetwork.city'] + '_' + X[
+                'trafficSource.medium']
+
+            X['metro_referralPath'] = X['geoNetwork.metro'] + '_' + X[
+                'trafficSource.referralPath']
+
+            X['metro_medium'] = X['geoNetwork.metro'] + '_' + X[
+                'trafficSource.medium']
+
+            X['region_medium'] = X['geoNetwork.region'] + '_' + X[
+                'trafficSource.medium']
+
+            X['region_referralPath'] = X['geoNetwork.region'] + '_' + X[
+                'trafficSource.referralPath']
+
+            X['metro_keyword'] = X['geoNetwork.metro'] + '_' + X[
+                'trafficSource.keyword']
+            # isTrue_medium
+
+            # country_referralPath
+            X['country_referralPath'] = X['geoNetwork.country'] + '_' + X[
+                'trafficSource.referralPath']
+            # isTureDirect_referralPath
+
+            # country_medium
+            X['country_medium'] = X['geoNetwork.country'] + '_' + X[
+                'trafficSource.medium']
+            # continet_medium
+            X['continent_medium'] = X['geoNetwork.continent'] + '_' + X[
+                'trafficSource.medium']
+            #   country_keyword
+            X['country_medium'] = X['geoNetwork.country'] + '_' + X[
+                'trafficSource.medium']
+            # medium_isTrueDirect
+            X['medium_isTrueDirect'] = X['trafficSource.medium'] + '_' + X[
+                'trafficSource.isTrueDirect']
+            # continent_referralPath
+            X['continent_referralPath'] = X['geoNetwork.continent'] + '_' + X[
+                'trafficSource.referralPath']
+            # subContinent_referralPath
+            X['subContinent_referralPath'] = X['geoNetwork.subContinent'] + '_' + X[
+                'trafficSource.referralPath']
+            #  keyword_referralPath
+            X['keyword_referralPath'] = X['trafficSource.keyword'] + '_' + X[
+                'trafficSource.referralPath']
+            # medium_referralPath
+            X['medium_referralPath'] = X['trafficSource.medium'] + '_' + X[
+                'trafficSource.referralPath']
+            # compaign_isTrueDirect
+
+            #  networkDomain_region
+            X['networkDomain_region'] = X['geoNetwork.networkDomain'] + '_' + X['geoNetwork.region']
+
+            X['geoNetwork.networkDomain_trafficSource.referralPath'] = X['geoNetwork.networkDomain'] + '_' + X[
+                'trafficSource.referralPath']
+            X['geoNetwork.networkDomain_trafficSource.medium'] = X['geoNetwork.networkDomain'] + '_' + X[
+                'trafficSource.medium']
+
+            X['geoNetwork.networkDomain_keyword'] = X['geoNetwork.networkDomain'] + '_' + X[
+                'trafficSource.keyword']
+            X['hits_jian_pageviews'] = X['totals.hits'] - X['totals.pageviews']
+            X['trafficSource.medium_channelGrouping']=X['trafficSource.medium'] + '_' + X[
+                'channelGrouping']
+
+            X['hits_add_pageviews'] = X['totals.hits'] - X['totals.pageviews']
+            X['hits_chu_pageviews'] = X['totals.hits'] / X['totals.pageviews']
+            # 1.4108
+            X['channelGroup_adNetworkType'] = X['trafficSource.adwordsClickInfo.adNetworkType'] + X['channelGrouping']
+
+        elif self.additional == 4:
+            X['source.country'] = X['trafficSource.source'] + '_' + X['geoNetwork.country']
+            X['campaign.medium'] = X['trafficSource.campaign'] + '_' + X['trafficSource.medium']
+            X['browser.category'] = X['device.browser'] + '_' + X['device.deviceCategory']
+            X['browser.os'] = X['device.browser'] + '_' + X['device.operatingSystem']
+
+            X['device_deviceCategory_channelGrouping'] = X['device.deviceCategory'] + "_" + X['channelGrouping']
+            X['channelGrouping_browser'] = X['device.browser'] + "_" + X['channelGrouping']
+            X['channelGrouping_OS'] = X['device.operatingSystem'] + "_" + X['channelGrouping']
+
+            for i in ['geoNetwork.city', 'geoNetwork.continent', 'geoNetwork.country', 'geoNetwork.metro',
+                      'geoNetwork.networkDomain', 'geoNetwork.region', 'geoNetwork.subContinent']:
+                for j in ['device.browser', 'device.deviceCategory', 'device.operatingSystem',
+                          'trafficSource.source']:
+                    X[i + "_" + j] = X[i] + "_" + X[j]
+
+            X['content.source'] = X['trafficSource.adContent'].astype(str) + "_" + X['source.country']
+            X['medium.source'] = X['trafficSource.medium'] + "_" + X['source.country']
+            X['hits_jian_pageviews'] = X['totals.hits'] - X['totals.pageviews']
+            X['trafficSource.medium_channelGrouping'] = X['trafficSource.medium'] + '_' + X[
+                'channelGrouping']
+
+            X['hits_add_pageviews'] = X['totals.hits'] - X['totals.pageviews']
+            X['hits_chu_pageviews'] = X['totals.hits'] / X['totals.pageviews']
+            # 1.4108
+            X['channelGroup_adNetworkType'] = X['trafficSource.adwordsClickInfo.adNetworkType'] + X['channelGrouping']
+        print('add_feature',X.info())
+        return X
+
+num_cols.append('hits_jian_pageviews')
+
+n_train=train.shape[0]
+pipe = Pipeline([
+    ('add_feature', add_feature(additional=3)),('labenc', labelenc()),('agg',aggregate(aggregate_sessions=aggregate_sessions,num_cols=num_cols,n_train=n_train,training=1)),('skew_dummies', skew_dummies(skew=1))])
+
+data_pipe = pipe.fit_transform(df_combi)
+n = target.shape[0]
+
+X = data_pipe[:n]
+test_X = data_pipe[n:]
+
+print(X.shape)
+print(X.columns)
+
+# X = X.groupby('fullVisitorId').mean()
+# print(X.head())
+# test_X = test_X.groupby('fullVisitorId').mean()
+
+X.to_pickle('train_1117.pkl')
+target.to_pickle('target1.pkl')
+test_X.to_pickle('test_1117.pkl')
