@@ -1,3 +1,30 @@
+# We are predicting the natural log of the sum of all transactions per user. Once the data is updated, as noted above, 
+# this will be for all users in test_v2.csv for December 1st, 2018 to January 31st, 2019. For every user in the test set,
+# 
+# In this notebook, we do feature engineering and we have already take and flatten json data. 
+# Also finally we will build a baseline light gbm model to get started.
+# Similar to most other kaggle competitions, we are given two datasets
+#
+# train.csv
+# test.csv
+# Each row in the dataset is one visit to the store. We are predicting the natural log of the sum of all transactions per user.
+#
+# The data fields in the given files are
+
+# fullVisitorId- A unique identifier for each user of the Google Merchandise Store.
+# channelGrouping - The channel via which the user came to the Store.
+# date - The date on which the user visited the Store.
+# device - The specifications for the device used to access the Store.
+# geoNetwork - This section contains information about the geography of the user.
+# sessionId - A unique identifier for this visit to the store.
+# socialEngagementType - Engagement type, either "Socially Engaged" or "Not Socially Engaged".
+# totals - This section contains aggregate values across the session.
+# trafficSource - This section contains information about the Traffic Source from which the session originated.
+# visitId - An identifier for this session. This is part of the value usually stored as the _utmb cookie. This is only unique to the user. For a completely unique ID, you should use a combination of fullVisitorId and visitId.
+# visitNumber - The session number for this user. If this is the first session, then this is set to 1.
+# visitStartTime - The timestamp (expressed as POSIX time).
+
+
 import pandas as pd
 import json
 import numpy as np
@@ -29,20 +56,16 @@ import seaborn as sns
 gc.enable()
 
 warnings.filterwarnings('ignore')
-#显示所有列
+
 pd.set_option('display.max_columns', None)
-#显示所有行
 pd.set_option('display.max_rows', None)
-#设置value的显示长度为100，默认为50
 pd.set_option('max_colwidth',100)
 
-# 读取数据
 train = pd.read_pickle('train_1116.pkl')
 test = pd.read_pickle('test_1116.pkl')
 
-# drop constant
+# drop constant columns
 def drop_constant_cols(df):
-    # Drop constant columns
     const_cols = [c for c in df.columns if df[c].nunique(dropna=False) == 1]
     df.drop(const_cols, axis=1, inplace=True)
     # this columnm is only in train data
@@ -74,12 +97,13 @@ plt.show()
 train.drop(labels=['customDimensions','totals.totalTransactionRevenue'],axis=1,inplace=True)
 test.drop(labels=['customDimensions','totals.transactionRevenue','totals.totalTransactionRevenue'],axis=1,inplace=True)
 
-train['totals.transactionRevenue'] = train['totals.transactionRevenue'].fillna(0).astype('float')
-train['totals.transactionRevenue'] = train['totals.transactionRevenue'].loc[train['totals.transactionRevenue'].notnull()].astype('float')
-
 # the number of unique category
 for col in train.columns:
     print(col,train[col].nunique())
+
+# target column
+train['totals.transactionRevenue'] = train['totals.transactionRevenue'].fillna(0).astype('float')
+train['totals.transactionRevenue'] = train['totals.transactionRevenue'].loc[train['totals.transactionRevenue'].notnull()].astype('float')
 
 # save target
 target = np.log1p(train[['fullVisitorId', 'totals.transactionRevenue']].groupby('fullVisitorId').sum())
@@ -119,6 +143,7 @@ print('mergeOK')
 df_combi = pd.concat([train,test], ignore_index=True)
 df_combi.drop('totals.transactionRevenue', axis=1, inplace=True)
 
+# handle time
 df_combi['date'] = pd.to_datetime(df_combi['date'].apply(lambda x: str(x)[:4] + '-' + str(x)[4:6] + '-' + str(x)[6:]))
 df_combi['month'] = df_combi['date'].dt.month
 df_combi['day'] = df_combi['date'].dt.day
@@ -134,11 +159,6 @@ train['visitStartTime'] = pd.to_datetime(train['visitStartTime'],unit='s')
 train['visitStartTime'] = train['visitStartTime'].apply(lambda x:str(x)[11:13])
 test['visitStartTime'] = pd.to_datetime(test['visitStartTime'],unit='s')
 test['visitStartTime'] = test['visitStartTime'].apply(lambda x:str(x)[11:13])
-
-# df_combi['visitId_dublicates'] = df_combi['visitId'].map(df_combi["visitId"].value_counts())
-# df_combi["session_dublicates"] = df_combi.sessionId.map(df.sessionId.value_counts())
-# fullvistorid = df_combi['fullVisitorId']
-# df_combi.drop('fullVisitorId', axis=1, inplace=True)
 
 df_combi.drop('visitId', axis=1, inplace=True)
 
@@ -194,6 +214,7 @@ for cols in df_combi.columns:
     # except:
     #     None
 
+# add feature
 df_combi['shoptime'] = df_combi['geoNetwork.subContinent'] + df_combi['visitStartTime']
 df_combi.drop('visitStartTime', axis=1, inplace=True)
 train['shoptime'] = train['geoNetwork.subContinent'] + train['visitStartTime']
@@ -201,7 +222,7 @@ train.drop('visitStartTime', axis=1, inplace=True)
 test['shoptime'] = test['geoNetwork.subContinent'] + test['visitStartTime']
 test.drop('visitStartTime', axis=1, inplace=True)
 
-# 每日数据计算
+# create perday data
 def perday(df = df_combi):
     df['dummy'] = 1
     df['user_cumcnt_per_day'] = (df[['fullVisitorId','date_time', 'dummy']].groupby(['fullVisitorId','date_time'])['dummy'].cumcount()+1)
@@ -215,6 +236,7 @@ num_cols.append('user_cumcnt_per_day')
 num_cols.append('user_sum_per_day')
 num_cols.append('user_cumcnt_sum_ratio_per_day')
 
+# other ways optional
 # def clus(cols, k=256,df_combi = df_combi):
 #     print(cols)
 #     referralPath_mean = train.groupby([cols])[['totals.transactionRevenue']].mean()
@@ -269,19 +291,23 @@ num_cols.append('user_cumcnt_sum_ratio_per_day')
 #         return x
 #     else:
 #         return 'others'
-
-def adcontents_mapping(x):
-    if ('google' in x):
-        return 'google'
-    elif ('placement' in x) | ('placememnt' in x):
-        return 'placement'
-    elif '(not set)' in x or 'nan' in x:
-        return x
-    elif 'ad' in x:
-        return 'ad'
-    else:
-        return 'others'
 #
+# class clus_feature(BaseEstimator, TransformerMixin):
+#     def __init__(self,clus,num_cols):
+#         self.num_cols = num_cols
+#         self.clus = clus
+#
+#     def fit(self, X, y=None):
+#         return self
+#
+#     def transform(self, X):
+#         print('clus_begin',X.info())
+#         for col in X.columns:
+#             if (col not in num_cols)&(col not in ['fullVisitorId', 'sessionId', 'date_time']):
+#                 if X[col].nunique() >= 256:
+#                     X = clus(cols=col, df_combi=X)
+#                     print('clus',X[col].nunique())
+#         return X
 #
 # def source_mapping(x):
 #     if ('google' in x):
@@ -392,8 +418,20 @@ def adcontents_mapping(x):
 #         return 'others'
 #
 # df_combi['device.browser'] = df_combi['device.browser'].map(lambda x:browser_mapping(str(x).lower())).astype('str')
-df_combi['trafficSource.adContent'] = df_combi['trafficSource.adContent'].map(lambda x:adcontents_mapping(str(x).lower())).astype('str')
 # df_combi['trafficSource.source'] = df_combi['trafficSource.source'].map(lambda x:source_mapping(str(x).lower())).astype('str')
+
+def adcontents_mapping(x):
+    if ('google' in x):
+        return 'google'
+    elif ('placement' in x) | ('placememnt' in x):
+        return 'placement'
+    elif '(not set)' in x or 'nan' in x:
+        return x
+    elif 'ad' in x:
+        return 'ad'
+    else:
+        return 'others'
+df_combi['trafficSource.adContent'] = df_combi['trafficSource.adContent'].map(lambda x:adcontents_mapping(str(x).lower())).astype('str')
 
 def refer(x):
     if ('google' in x):
@@ -432,7 +470,6 @@ Nan_number[Nan_number > 0].sort_values(ascending=False)
 print('iNanNan',Nan_number[Nan_number > 0].sort_values(ascending=False))
 print(df_combi.info())
 
-# 聚合
 def aggregate_sessions(df=None, num_cols=None):
     aggs = {
             'date_time': ['min', 'max'],
@@ -449,18 +486,6 @@ def aggregate_sessions(df=None, num_cols=None):
         'hits_jian_pageviews':['max','min','sum','mean','median']
 
     }
-    # aggs = {
-    #     'date_time': ['min', 'max'],
-    #
-    #     'totals.hits': ['sum', 'min', 'max', 'mean', 'median'],
-    #     'totals.pageviews': ['sum', 'min', 'max', 'mean', 'median'],
-    #     'totals.bounces': ['sum', 'mean', 'median'],
-    #     'totals.newVisits': ['sum', 'mean', 'median'],
-    #     'Sessions': ['sum'], 'Bounce Rate': ['sum'],
-    #     'Revenue': ['sum'], 'Transactions': ['sum'],
-    #     'Goal Conversion Rate': ['sum'],
-    #     "Avg. Session Duration": ['sum']
-    # }
     for f in df.columns:
         if (f not in num_cols)&(f != 'fullVisitorId')&(f != 'date_time'):
              aggs[f] = ['min', 'max', 'mean', 'median', 'var', 'std']
@@ -476,24 +501,7 @@ def aggregate_sessions(df=None, num_cols=None):
     print('agg_user.info()', users.info())
     return users
 
-# class clus_feature(BaseEstimator, TransformerMixin):
-#     def __init__(self,clus,num_cols):
-#         self.num_cols = num_cols
-#         self.clus = clus
-#
-#     def fit(self, X, y=None):
-#         return self
-#
-#     def transform(self, X):
-#         print('clus_begin',X.info())
-#         for col in X.columns:
-#             if (col not in num_cols)&(col not in ['fullVisitorId', 'sessionId', 'date_time']):
-#                 if X[col].nunique() >= 256:
-#                     X = clus(cols=col, df_combi=X)
-#                     print('clus',X[col].nunique())
-#         return X
-
-# 聚合
+# aggregate
 class aggregate(BaseEstimator, TransformerMixin):
     def __init__(self,aggregate_sessions,num_cols,n_train,training):
         self.num_cols = num_cols
@@ -529,7 +537,7 @@ class labelenc(BaseEstimator, TransformerMixin):
         print('laben',X.info())
         return X
 
-# 数值特征处理
+# handle on numerical features
 class skew_dummies(BaseEstimator, TransformerMixin):
     def __init__(self, skew=0.5):
         self.skew = skew
@@ -545,10 +553,8 @@ class skew_dummies(BaseEstimator, TransformerMixin):
         print('skewness',skewness_features)
         X[skewness_features] = np.log1p(X[skewness_features])
         return X
-#
-# class clus_feature(BaseEstimator, TransformerMixin):
 
-# 特征添加
+# add feature
 class add_feature(BaseEstimator, TransformerMixin):
     def __init__(self, additional=1):
         self.additional = additional
@@ -802,7 +808,6 @@ class add_feature(BaseEstimator, TransformerMixin):
 
 num_cols.append('hits_jian_pageviews')
 
-# Pipeline 流程化处理
 n_train=train.shape[0]
 pipe = Pipeline([
     ('add_feature', add_feature(additional=3)),('labenc', labelenc()),('agg',aggregate(aggregate_sessions=aggregate_sessions,num_cols=num_cols,n_train=n_train,training=1)),('skew_dummies', skew_dummies(skew=1))])
@@ -816,10 +821,7 @@ test_X = data_pipe[n:]
 print(X.shape)
 print(X.columns)
 
-# X = X.groupby('fullVisitorId').mean()
-# print(X.head())
-# test_X = test_X.groupby('fullVisitorId').mean()
-
+# save to pkl 
 X.to_pickle('train_1117.pkl')
 target.to_pickle('target1.pkl')
 test_X.to_pickle('test_1117.pkl')
