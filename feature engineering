@@ -79,19 +79,13 @@ drop_constant_cols(test)
 
 print(train.head())
 
-train['date_time'] = train['visitStartTime']
-train['date'] = pd.to_datetime(train['date'].apply(lambda x: str(x)[:4] + '-' + str(x)[4:6] + '-' + str(x)[6:]))
-train['month'] = train['date'].dt.month
-train['day'] = train['date'].dt.day
-train['weekday'] = train['date'].dt.weekday
-train['weekofyear'] = train['date'].dt.weekofyear
-
-fig, ax1 = plt.subplots(figsize=(16, 8))
-plt.title("Trends of transactions number by paying and non-paying users");
-train.groupby(['date'])['totals.transactionRevenue'].count().plot(color='brown')
-ax1.set_ylabel('Transaction count', color='b')
-plt.legend(['Non-paying users'])
-plt.show()
+# visualization 
+# fig, ax1 = plt.subplots(figsize=(16, 8))
+# plt.title("Trends of transactions number by paying and non-paying users");
+# train.groupby(['date'])['totals.transactionRevenue'].count().plot(color='brown')
+# ax1.set_ylabel('Transaction count', color='b')
+# plt.legend(['Non-paying users'])
+# plt.show()
 
 # drop unuse columns
 train.drop(labels=['customDimensions','totals.totalTransactionRevenue'],axis=1,inplace=True)
@@ -217,10 +211,10 @@ for cols in df_combi.columns:
 # add feature
 df_combi['shoptime'] = df_combi['geoNetwork.subContinent'] + df_combi['visitStartTime']
 df_combi.drop('visitStartTime', axis=1, inplace=True)
-train['shoptime'] = train['geoNetwork.subContinent'] + train['visitStartTime']
-train.drop('visitStartTime', axis=1, inplace=True)
-test['shoptime'] = test['geoNetwork.subContinent'] + test['visitStartTime']
-test.drop('visitStartTime', axis=1, inplace=True)
+# train['shoptime'] = train['geoNetwork.subContinent'] + train['visitStartTime']
+# train.drop('visitStartTime', axis=1, inplace=True)
+# test['shoptime'] = test['geoNetwork.subContinent'] + test['visitStartTime']
+# test.drop('visitStartTime', axis=1, inplace=True)
 
 # create perday data
 def perday(df = df_combi):
