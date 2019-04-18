@@ -1,40 +1,25 @@
+# try lightgbm and xgboost on predict
+# lightgbm is much faster than xgboost, and choose lightgbm
+# If time is enough,maybe we can do blending on two ways.
+
 import pandas as pd
-import json
 import numpy as np
-import matplotlib.pyplot as plt
-import os
-from pandas.io.json import json_normalize
-import time
 import pytz
-from sklearn.cluster import KMeans
-from scipy.stats import skew
 import warnings
 from sklearn.decomposition import PCA, KernelPCA
-from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, clone
-from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.model_selection import train_test_split,cross_val_score, GridSearchCV, KFold
 import lightgbm as lgb
 import xgboost as xgb
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, ExtraTreesRegressor
-from sklearn.svm import SVR, LinearSVR
-from sklearn.linear_model import ElasticNet, SGDRegressor, BayesianRidge
 from xgboost import XGBRegressor
-from sklearn.kernel_ridge import KernelRidge
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import Lasso
-from sklearn.linear_model import LinearRegression
-from sklearn.linear_model import Ridge
 from sklearn.preprocessing import RobustScaler, StandardScaler, LabelEncoder
 from sklearn.metrics import mean_squared_error
 import gc
 gc.enable()
 
 warnings.filterwarnings('ignore')
-#显示所有列
 pd.set_option('display.max_columns', None)
-#显示所有行
 pd.set_option('display.max_rows', None)
-#设置value的显示长度为100，默认为50
 pd.set_option('max_colwidth',100)
 
 X = pd.read_pickle('train_1117.pkl')
@@ -52,14 +37,9 @@ print('X',X.info())
 print(X.shape)
 print(test.shape)
 
-# for col in X.columns:
-#     X[col] = X[col].astype('float')
-# X = X.reset_index(drop=True)
-# print(X.shape)
-# print(X.info())
-
 print(X.shape)
 
+# I have tried PCA and standscale, but don't work
 # scaler = RobustScaler()
 # X = scaler.fit(train).transform(train)
 # test = scaler.transform(test)
@@ -70,20 +50,8 @@ print(y[y>0].min())
 y = y.reshape(-1,)
 print('y.shape',y.shape)
 n_folds = 5
-#
-# lgbmodel = lgb.LGBMRegressor(n_estimators=1000, objective="regression", metric="rmse", num_leaves=31, min_child_samples=100,
-#                       learning_rate=0.03, bagging_fraction=0.7, feature_fraction=0.5, bagging_frequency=5,
-#                       bagging_seed=2019, subsample=.9, colsample_bytree=.9, use_best_model=True,
-#         verbose=500,early_stopping_rounds=300)
-# def rmse_cv(model):
-#     kf = KFold(n_folds, shuffle=True, random_state=42).get_n_splits(X.values)
-#     rmse= np.sqrt(-cross_val_score(model, X, y, scoring="neg_mean_squared_error", cv = kf))
-#     return(rmse)
-#
-# score = rmse_cv(lgbmodel, X, y)
-# print("{:.6f}, {:.4f}".format(score.mean(),score.std()))
 
-
+# Other ways trying, but works bad
 # models = [LinearRegression(),Ridge(),Lasso(alpha=0.01,max_iter=10000),RandomForestRegressor(),GradientBoostingRegressor(),SVR(),LinearSVR(),
 #           ElasticNet(alpha=0.001,max_iter=10000),SGDRegressor(max_iter=1000,tol=1e-3),BayesianRidge(),KernelRidge(alpha=0.6, kernel='polynomial', degree=2, coef0=2.5),
 #           ExtraTreesRegressor(),XGBRegressor()]
@@ -91,7 +59,7 @@ n_folds = 5
 # for name, model in zip(names, models):
 #     score = rmse_cv(model, X_scaled, y)
 #     print("{}: {:.6f}, {:.4f}".format(name,score.mean(),score.std()))
-#
+
 params = {"objective" : "regression", "metric" : "rmse",
               "num_leaves" : 31, "learning_rate" : 0.02,
               "bagging_fraction" : 0.75, "feature_fraction" : 0.5, "bagging_frequency" : 5,
@@ -99,14 +67,10 @@ params = {"objective" : "regression", "metric" : "rmse",
           }
 
 folds = KFold(n_splits = n_folds, shuffle=True, random_state = 4)
-# #
+
 def lgb_():
     prediction = np.zeros(test.shape[0])
     model = lgb.LGBMRegressor(**params, n_estimators=3000, nthread=-1, n_jobs=-1)
-    # lgbmodel = lgb.LGBMRegressor(n_estimators=1000, objective="regression", metric="rmse", num_leaves=31, min_child_samples=100,
-    #                       learning_rate=0.03, bagging_fraction=0.7, feature_fraction=0.5, bagging_frequency=5,
-    #                       bagging_seed=2019, subsample=.9, colsample_bytree=.9, use_best_model=True)
-
     importances = pd.DataFrame()
     oof_reg_preds = np.zeros(X.shape[0])
     # VAL = []
@@ -180,7 +144,7 @@ lgb_()
 # result = pd.DataFrame({'totals.transactionRevenue':prediction})
 # result.to_csv('submission1106_xgb.csv',index=False)
 
-# predict
+# predict and submisstion
 test = pd.read_csv('New/sample_submission_v2.csv')
 prediction = pd.read_csv('submission1122.csv')
 prediction = np.array(prediction)
@@ -188,6 +152,7 @@ test['PredictedLogRevenue'] = prediction
 test["PredictedLogRevenue"].apply(lambda x : 0.0 if x < 0 else x)
 test.to_csv('lgb_0.1385.csv',index=False)
 
+# If time is enough, we can stacking some boosting algorithms
 # class stacking(BaseEstimator, RegressorMixin, TransformerMixin):
 #     def __init__(self, mod, meta_model):
 #         self.mod = mod
